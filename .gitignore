@@ -1,0 +1,5 @@
+__pycache__/
+*.py[cod]
+
+ML IOT/Code part/fire_sensor_log.csv
+ML IOT/Code part/fire_sensor_data.csv
