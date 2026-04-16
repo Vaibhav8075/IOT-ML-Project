@@ -3,3 +3,4 @@ __pycache__/
 
 ML IOT/Code part/fire_sensor_log.csv
 ML IOT/Code part/fire_sensor_data.csv
+backend/data/
