@@ -256,7 +256,7 @@ To find your laptop IP on Windows:
 ipconfig
 ```
 
-If you are using Windows mobile hotspot, it is often `192.168.137.1`, but always verify it.
+If you are using Windows mobile hotspot, it is often `192.xxx.xxx.x`, but always verify it.
 
 ### 4. Open Serial Monitor
 
