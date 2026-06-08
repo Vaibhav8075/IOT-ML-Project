@@ -4,6 +4,8 @@ This project is a smart fire detection system that combines IoT sensing, multi-s
 
 Instead of relying on only one signal such as smoke, the system combines multiple environmental signals to reduce false alarms and improve fire detection reliability.
 
+---
+
 ## Problem Statement
 
 Traditional fire alarms often trigger false alerts because they react to a single condition such as smoke or heat. In real indoor spaces, that can be caused by:
@@ -20,14 +22,56 @@ This project aims to reduce those false positives by using multiple sensors toge
 - `WARNING`
 - `FIRE`
 
+---
+
 ## Project Goal
 
 Build a low-cost, scalable fire detection framework that:
 
-- collects live environmental data with an ESP32
+- collects live environmental data with an ESP32-S3
 - uses ML to classify fire risk
 - shows system state in a digital twin dashboard
 - supports emergency alerts and actuator triggering
+
+---
+
+## Hardware — ESP32-S3 N8R8
+
+This project runs on the **ESP32-S3-WROOM-1 N8R8** (8MB Flash, 8MB PSRAM).
+
+> **Important:** This board uses a **CP210x USB-to-UART bridge**, not USB CDC. Serial output works through the CP210x chip directly. USB CDC on Boot must be **Disabled** in Arduino IDE.
+
+### Arduino IDE Board Settings
+
+| Setting | Value |
+|---|---|
+| Board | ESP32S3 Dev Module |
+| Port | COM10 (or whichever shows as Silicon Labs CP210x) |
+| USB CDC on Boot | **Disabled** |
+| Upload Mode | **UART0** |
+| Upload Speed | 921600 |
+| Flash Size | 8MB (64Mb) |
+| PSRAM | OPI PSRAM |
+
+### Pin Definitions
+
+| Sensor | GPIO Pin |
+|---|---|
+| PIR (HC-SR501) | GPIO 15 |
+| LDR Module | GPIO 4 |
+| MQ-7 (CO sensor) | GPIO 5 |
+| Flame Sensor (D1 digital) | GPIO 16 |
+| DHT22 (data) | GPIO 14 |
+
+> These pins use ADC1 only (GPIO 1–10 range for analog). ADC2 pins conflict with WiFi on ESP32-S3 and must not be used for analog sensors.
+
+### Wiring Notes
+
+- DHT22 requires a **10kΩ pull-up resistor** between DATA and 3.3V
+- PIR and MQ-7 are powered from **5V** but their signal pins are 3.3V compatible
+- Flame sensor is **active LOW** — reads LOW when flame detected
+
+---
 
 ## System Architecture
 
@@ -35,24 +79,17 @@ The project is designed in four layers.
 
 ### 1. IoT Sensor Network
 
-The ESP32-S3 / ESP32 collects data from multiple sensors:
+The ESP32-S3 collects data from multiple sensors:
 
-- PMS7003 for smoke / PM2.5
 - MQ-7 for carbon monoxide
-- 5-channel flame sensor
 - DHT22 for temperature and humidity
+- 5-channel flame sensor
 - PIR for motion detection
 - LDR for flame flicker signature
 
 ### 2. Intelligent Decision Layer
 
-Sensor values are fused and classified by a machine learning model into:
-
-- `NORMAL`
-- `WARNING`
-- `FIRE`
-
-The model uses multiple contextual signals instead of fixed threshold logic only.
+Sensor values are fused and classified by a machine learning model into `NORMAL`, `WARNING`, or `FIRE`. The model uses multiple contextual signals and includes rule-based safety overrides on top of the ML prediction.
 
 ### 3. Digital Twin Monitoring Layer
 
@@ -72,78 +109,81 @@ When a fire condition is detected, the intended final system should support:
 - relay-driven actuators such as a fan or water pump
 - GSM-based SMS alerts using SIM800L
 
-## Research Contribution
+---
 
-The key contributions of the project are:
+## ML Model
 
-- multi-modal sensor fusion for fire detection
-- use of PMS7003 for early-stage smoke sensing
-- LDR flicker-based flame validation
-- ML-assisted classification instead of pure thresholding
-- digital twin integration for monitoring and visualization
-- low-cost architecture suitable for practical deployment
+### Algorithm
+
+Random Forest Classifier
+
+### Training Configuration
+
+```python
+RandomForestClassifier(
+    n_estimators=300,
+    min_samples_leaf=2,
+    class_weight='balanced',
+    random_state=42
+)
+```
+
+### Dataset
+
+`fire_detection_model.pkl` was trained on a combined dataset of **367,550 rows** from real indoor fire detection experiments (not synthetic data). Sources used:
+
+- Indoor Fire Dataset with Distributed Multi-Sensor Nodes
+- Smoke Detection IoT CSV
+
+### Model Performance
+
+| Metric | Value |
+|---|---|
+| Test Accuracy | 99.16% |
+| Fire Recall | 98% |
+| No-Fire Precision | 99% |
+
+### Feature Importances
+
+| Feature | Importance |
+|---|---|
+| PM2.5 / Smoke proxy | 46.6% |
+| H2 / CO proxy | 26.6% |
+| CO ADC | 13.8% |
+| Temperature | 6.8% |
+| Humidity | 6.2% |
+
+### Important Note on Real-World Accuracy
+
+The model was trained on lab-collected data, not on readings from your specific sensors. Real-world accuracy will depend on sensor calibration and environmental conditions. Once live data is collected from the actual hardware, retraining with real labeled readings will significantly improve deployment reliability.
+
+### Files
+
+| File | Purpose |
+|---|---|
+| `fire_detection_model.pkl` | Trained RandomForest classifier |
+| `fire_scaler.pkl` | StandardScaler — must be loaded alongside the model |
+
+Both files must be in the same folder as `sensor_receiver.py`.
+
+---
 
 ## Current Working Software Flow
 
-Right now, the repo supports this working flow:
-
 ```text
-ESP32 sensors
-  -> POST JSON over Wi-Fi
+ESP32-S3 sensors
+  -> POST JSON over Wi-Fi every 2 seconds
 sensor_receiver.py
-  -> ML inference
+  -> ML inference (RandomForest)
   -> rule-based safety overrides
   -> writes fire_sensor_log.csv
 digital_twin_dashboard.py
   -> reads CSV every 2 seconds
 Browser
-  -> live dashboard
+  -> live dashboard at http://127.0.0.1:8050
 ```
 
-This is the current practical setup for live testing.
-
-## Current Development Status
-
-Completed:
-
-- baseline ML model training pipeline
-- synthetic fire dataset generation
-- live sensor simulation utilities
-- digital twin dashboard UI
-- Flask-based sensor receiver for ESP32 telemetry
-- ESP32 sketch for posting live sensor data to backend
-
-Partially completed:
-
-- live ESP32 integration
-- sensor calibration and validation
-- dashboard-driven monitoring
-
-Pending:
-
-- PMS7003 hardware integration
-- real labeled dataset collection
-- production-grade ML retraining on real sensor data
-- true zone-aware digital twin
-- buzzer / relay / GSM automation flow
-- deployment hardening and production backend
-
-## Hardware Components
-
-| Category | Component | Model | Purpose |
-|---|---|---|---|
-| Core Controller | Microcontroller | ESP32-S3-DevKitC-1 | Main processing and communication |
-| Smoke Detection | Laser Particle Sensor | PMS7003 | PM1.0 / PM2.5 / PM10 smoke sensing |
-| Gas Detection | CO Sensor | MQ-7 | Detects carbon monoxide |
-| Flame Detection | IR Flame Sensor | 5-Channel YG1006 Module | Detects flame radiation |
-| Environmental Monitoring | Temperature/Humidity Sensor | DHT22 | Measures heat and humidity |
-| Motion Detection | PIR Sensor | HC-SR501 | Occupancy context |
-| Optical Signature | LDR Module | LM393 LDR Sensor | Flame flicker feature extraction |
-| Emergency Alerts | GSM Module | SIM800L V2 | SMS alerts |
-| Local Alert | Active Buzzer | 3.3V-5V Module | Local warning |
-| Actuation | Relay Module | 5V 30A 1-Channel | External control |
-| Power Management | Buck Converter | LM2596 | Stable power for GSM |
-| Power Supply | Adapter | 5V 3A DC Adapter | Main supply |
+---
 
 ## Repository Structure
 
@@ -156,6 +196,9 @@ Pending:
 |-- backend/
 |   |-- README.md
 |   `-- app/
+|       |-- main.py
+|       |-- db.py
+|       `-- schemas.py
 |-- firmware/
 |   `-- esp32/
 |       `-- esp32_fire_detection.ino
@@ -169,231 +212,269 @@ Pending:
         |-- sensor_receiver.py
         |-- digital_twin_dashboard.py
         |-- fire_detection_model.pkl
+        |-- fire_scaler.pkl
         |-- fire_sensor_log.csv
         `-- building_3d_model.json
 ```
 
-## Important Files
-
-- `ML IOT/Code part/fire_ml_model.py`
-  Trains and evaluates the baseline fire detection model.
-
-- `ML IOT/Code part/fire_data_generator.py`
-  Generates a synthetic labeled dataset for model training.
-
-- `ML IOT/Code part/sensor_receiver.py`
-  Receives ESP32 JSON telemetry, runs ML inference, applies rule overrides, and logs to CSV.
-
-- `ML IOT/Code part/digital_twin_dashboard.py`
-  Dash dashboard for live monitoring.
-
-- `firmware/esp32/esp32_fire_detection.ino`
-  ESP32 firmware for sensor reading and POSTing telemetry to Flask.
-
-- `ARCHITECTURE.md`
-  High-level target architecture for the full system.
-
-- `SOFTWARE_ROADMAP.md`
-  Implementation roadmap from proof-of-concept to full system.
+---
 
 ## Installation
 
-Install Python dependencies from the repo root:
+### Python Dependencies
+
+Run once from the project root:
 
 ```powershell
-cd "c:\Users\vibhu\Downloads\IOT-ML-Project-main\IOT-ML-Project-main"
+cd "IOT-ML-Project-main"
 pip install -r requirements.txt
 ```
 
-Arduino libraries needed for the ESP32 sketch:
+Or install directly:
 
-- `DHT sensor library`
-- `ArduinoJson`
+```powershell
+pip install flask scikit-learn joblib pandas numpy dash plotly
+```
+
+### Arduino Libraries
+
+Install these in Arduino IDE via Sketch → Include Library → Manage Libraries:
+
+- `DHT sensor library` by Adafruit
+- `Adafruit Unified Sensor` (installed automatically with DHT)
+- `ArduinoJson` by Benoit Blanchon
+
+---
 
 ## How To Run The Project
 
-### 1. Start the Flask receiver
+### Step 1 — Find your laptop IP
 
-```powershell
-cd "c:\Users\vibhu\Downloads\IOT-ML-Project-main\IOT-ML-Project-main\ML IOT\Code part"
-python sensor_receiver.py
-```
-
-Expected health URL:
-
-- `http://127.0.0.1:5000/health`
-
-### 2. Start the dashboard
-
-Open a second terminal:
-
-```powershell
-cd "c:\Users\vibhu\Downloads\IOT-ML-Project-main\IOT-ML-Project-main\ML IOT\Code part"
-python digital_twin_dashboard.py
-```
-
-Dashboard URL:
-
-- `http://127.0.0.1:8050`
-
-### 3. Configure and flash the ESP32
-
-Open:
-
-- `firmware/esp32/esp32_fire_detection.ino`
-
-Update these values before uploading:
-
-```cpp
-const char* WIFI_SSID = "YOUR_WIFI_NAME";
-const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
-const char* BACKEND_URL = "http://YOUR_LAPTOP_IP:5000/telemetry";
-```
-
-To find your laptop IP on Windows:
+Run this every time before starting, because your IP can change:
 
 ```powershell
 ipconfig
 ```
 
-If you are using Windows mobile hotspot, it is often `192.xxx.xxx.x`, but always verify it.
+Look for **IPv4 Address** under your Wi-Fi adapter (e.g. `192.168.x.x`).
 
-### 4. Open Serial Monitor
+Update this line in `esp32_fire_detection.ino` if it changed:
 
-The ESP32 should print:
+```cpp
+const char* BACKEND_URL = "http://YOUR_LAPTOP_IP:5000/telemetry";
+```
 
-- live sensor values
-- Wi-Fi status
-- HTTP response code
-- backend response
+### Step 2 — Start the Flask receiver
 
-## Example Startup Order
+Open a terminal:
 
 ```powershell
-# Terminal 1
-cd "c:\Users\vibhu\Downloads\IOT-ML-Project-main\IOT-ML-Project-main\ML IOT\Code part"
+cd "IOT-ML-Project-main\ML IOT\Code part"
 python sensor_receiver.py
+```
 
-# Terminal 2
-cd "c:\Users\vibhu\Downloads\IOT-ML-Project-main\IOT-ML-Project-main\ML IOT\Code part"
+Verify it is running by opening in your browser:
+
+```
+http://127.0.0.1:5000/health
+```
+
+### Step 3 — Start the dashboard
+
+Open a second terminal:
+
+```powershell
+cd "IOT-ML-Project-main\ML IOT\Code part"
 python digital_twin_dashboard.py
 ```
 
-Then:
+Dashboard URL:
 
-1. upload `esp32_fire_detection.ino`
-2. open Serial Monitor
-3. open `http://127.0.0.1:8050`
+```
+http://127.0.0.1:8050
+```
 
-## ML Pipeline
+### Step 4 — Upload firmware to ESP32-S3
 
-The current ML flow is:
+Open `firmware/esp32/esp32_fire_detection.ino` in Arduino IDE.
 
-1. generate training data with `fire_data_generator.py`
-2. train the classifier with `fire_ml_model.py`
-3. save the trained model as `fire_detection_model.pkl`
-4. run live inference in `sensor_receiver.py`
-5. apply rule-based safety overrides
-6. log results to `fire_sensor_log.csv`
-7. display them in the dashboard
+Update WiFi credentials and backend URL:
 
-### Current ML Inputs
+```cpp
+const char* WIFI_SSID     = "YOUR_WIFI_NAME";
+const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
+const char* BACKEND_URL   = "http://YOUR_LAPTOP_IP:5000/telemetry";
+```
 
-The model expects these features:
+Set Tools menu settings (see Hardware section above), then click Upload.
 
-- `Temperature`
-- `Humidity`
-- `Smoke_ADC`
-- `CO_ADC`
-- `Flame`
-- `LDR_ADC`
-- `LDR_Flicker`
-- `Motion`
+### Step 5 — Open Serial Monitor
 
-### Current Hardware Note
+After upload completes:
 
-PMS7003 is not yet wired into the live ESP32 path, so `sensor_receiver.py` currently uses a temporary CO-based smoke proxy for `Smoke_ADC`.
+1. Open Serial Monitor (Ctrl+Shift+M)
+2. Set baud rate to `115200`
+3. Press the **EN/RESET** button on the board
 
-This should be replaced with real PM values once PMS7003 is integrated.
+Expected output:
+
+```
+=== BOOT OK ===
+Connecting to WiFi......
+WiFi connected
+IP: 192.168.x.x
+Syncing NTP....
+NTP synced
+MQ-7 warming up (90 sec)...
+System ready
+
+--------------------------------------------
+[DHT22]  Temp     : 28.5 C
+[DHT22]  Humidity : 54.0 %
+[MQ-7]   CO ADC   : 420  (warming up - 87s left)
+[LDR]    ADC      : 2954
+[LDR]    Flicker  : 2.3
+[PIR]    Motion   : no
+[FLAME]  D1       : none
+[HTTP]   Response : 200
+[ML]     Result   : {"status":"ok","ml_pred":0,"final_label":"NORMAL","reason":"ML"}
+```
+
+---
+
+## Example Full Startup (Copy-Paste)
+
+```powershell
+# Terminal 1 — backend
+cd "IOT-ML-Project-main\ML IOT\Code part"
+python sensor_receiver.py
+
+# Terminal 2 — dashboard
+cd "IOT-ML-Project-main\ML IOT\Code part"
+python digital_twin_dashboard.py
+```
+
+Then upload firmware, open Serial Monitor, open `http://127.0.0.1:8050`.
+
+---
 
 ## ESP32 Telemetry Payload
 
-The ESP32 currently sends JSON in this shape:
+The ESP32-S3 sends JSON in this shape every 2 seconds:
 
 ```json
 {
   "device_id": "esp32_001",
-  "timestamp": "2026-04-16T11:19:34Z",
-  "temperature": 28.0,
+  "zone_id": "lab_zone",
+  "timestamp": "2026-06-08T10:30:00Z",
+  "temperature": 28.5,
   "humidity": 54.0,
-  "co_adc": 883,
+  "co_adc": 420,
   "ldr_adc": 2954,
   "ldr_flicker": 2.3,
-  "flame": 1,
+  "flame": 0,
   "motion": 0,
-  "mq7_warmed": true
+  "mq7_warmed": false
 }
 ```
 
-## Known Issues And Notes
-
-- The flame sensor may need logic inversion or threshold tuning depending on your module.
-- MQ-7 readings are unreliable before warm-up is complete.
-- PMS7003 live integration is still pending.
-- The current dashboard is a CSV-driven digital twin demo, not a full zone-aware production twin yet.
-- The FastAPI backend scaffold exists in `backend/`, but the active live workflow currently uses Flask + CSV because it matches the present ESP32-to-dashboard testing setup.
+---
 
 ## Troubleshooting
 
+### Serial Monitor is blank
+
+- Check Tools → USB CDC on Boot → **Disabled** (critical for CP210x boards)
+- Check Tools → Upload Mode → **UART0**
+- After upload, close and reopen Serial Monitor, then press EN/RESET
+- Verify COM10 is the Silicon Labs CP210x port in Device Manager
+
 ### ESP32 shows HTTP response `-1`
 
-Check:
+- Confirm `sensor_receiver.py` is running
+- Confirm `BACKEND_URL` uses your laptop IPv4 — not `127.0.0.1`
+- Confirm laptop and ESP32 are on the same Wi-Fi hotspot
+- Allow Python through Windows Firewall, or run: `netsh advfirewall firewall add rule name="Flask5000" dir=in action=allow protocol=TCP localport=5000`
 
-- `sensor_receiver.py` is running
-- `BACKEND_URL` uses your laptop IP, not `127.0.0.1`
-- laptop and ESP32 are on the same Wi-Fi/hotspot
-- Windows firewall allows Python / port `5000`
+### DHT22 returns NAN
 
-### Browser cannot open `127.0.0.1:5000/health`
-
-That means `sensor_receiver.py` is not running, or it crashed.
+- Missing 10kΩ pull-up resistor between DATA and 3.3V
+- Wrong pin — confirm data wire is on GPIO 14
+- Reading interval too short — minimum 2 seconds between reads
 
 ### Dashboard shows no data
 
-Check:
-
-- `sensor_receiver.py` is receiving POSTs
-- `fire_sensor_log.csv` is being updated
-- `digital_twin_dashboard.py` is running
+- Confirm `sensor_receiver.py` is receiving POSTs (watch terminal output)
+- Confirm `fire_sensor_log.csv` file is being updated
+- Confirm `digital_twin_dashboard.py` is running in a separate terminal
 
 ### Flame is always detected
 
-Likely causes:
+- Flame sensor is active LOW — adjust potentiometer on the module
+- Check wiring — D0 (digital out) goes to GPIO 16
 
-- flame logic inversion
-- flame module threshold potentiometer needs tuning
-- noisy or incorrect wiring
+### MQ-7 readings are very high or erratic
+
+- MQ-7 requires 90 seconds warm-up — readings before that are unreliable
+- The sketch shows a countdown: `(warming up - Xs left)`
+- Use a stable 5V supply — voltage drop causes erratic ADC values
+
+---
+
+## Current Development Status
+
+Completed:
+
+- ESP32-S3 N8R8 firmware with correct S3 pin mapping
+- ML model trained on 367k real fire detection dataset rows
+- Flask-based sensor receiver with ML inference and rule overrides
+- Digital twin dashboard
+- CSV logging of all readings and predictions
+
+Partially completed:
+
+- Live ESP32-S3 hardware integration and sensor validation
+- Dashboard-driven monitoring
+
+Pending:
+
+- PMS7003 smoke sensor hardware integration
+- Real labeled dataset collection from live sensors
+- ML retraining on real sensor readings
+- True zone-aware digital twin
+- Buzzer, relay, and SIM800L emergency response automation
+- Production backend (FastAPI scaffold exists in `backend/`)
+
+---
+
+## Hardware Components
+
+| Category | Component | Model | Purpose |
+|---|---|---|---|
+| Core Controller | Microcontroller | ESP32-S3-WROOM-1 N8R8 | Main processing and WiFi |
+| Gas Detection | CO Sensor | MQ-7 | Carbon monoxide detection |
+| Flame Detection | IR Flame Sensor | 5-Channel YG1006 | Flame radiation detection |
+| Environmental | Temp/Humidity | DHT22 | Temperature and humidity |
+| Motion Detection | PIR Sensor | HC-SR501 | Occupancy context |
+| Optical Signature | LDR Module | LM393 | Flame flicker extraction |
+| Emergency Alerts | GSM Module | SIM800L V2 | SMS alerts (pending) |
+| Local Alert | Active Buzzer | 3.3V-5V | Local warning (pending) |
+| Actuation | Relay Module | 5V 30A 1-Channel | External control (pending) |
+| Power | Adapter | 5V 3A DC | Main supply |
+
+---
 
 ## Roadmap
 
-The bigger software goals are documented in:
+Next major steps:
 
-- [ARCHITECTURE.md](./ARCHITECTURE.md)
-- [SOFTWARE_ROADMAP.md](./SOFTWARE_ROADMAP.md)
+1. Confirm live ESP32-S3 serial output and sensor readings
+2. Confirm backend receiving JSON and ML predicting correctly
+3. Collect real readings from live sensors across normal and fire conditions
+4. Retrain model on real labeled data
+5. Integrate PMS7003 smoke sensor into firmware
+6. Connect buzzer and relay for automated emergency response
+7. Integrate SIM800L for SMS alerts
 
-The next major steps are:
-
-1. integrate PMS7003 into live ESP32 telemetry
-2. calibrate sensors and collect real labeled data
-3. retrain the model on real data
-4. improve the digital twin into a real zone-aware system
-5. connect buzzer, relay, and SIM800L for full emergency response
-
-## Final Objective
-
-The final objective of this project is to deliver a practical, scalable, and intelligent indoor fire detection system that improves safety through:
-
-- real-time sensing
-- ML-based decision-making
-- digital twin monitoring
-- automated emergency response
+Full roadmap: [SOFTWARE_ROADMAP.md](./SOFTWARE_ROADMAP.md)  
+Architecture details: [ARCHITECTURE.md](./ARCHITECTURE.md)

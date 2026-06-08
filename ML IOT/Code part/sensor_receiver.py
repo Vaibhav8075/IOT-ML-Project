@@ -8,9 +8,11 @@ import joblib
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_FILE = os.path.join(BASE_DIR, "fire_detection_model.pkl")
+SCALER_FILE = os.path.join(BASE_DIR, "fire_scaler.pkl")
 LOG_CSV = os.path.join(BASE_DIR, "fire_sensor_log.csv")
-
-FEATURES = [
+LOG_HEADER = [
+    "Timestamp",
+    "Scenario",
     "Temperature",
     "Humidity",
     "Smoke_ADC",
@@ -19,6 +21,17 @@ FEATURES = [
     "LDR_ADC",
     "LDR_Flicker",
     "Motion",
+    "ML_Pred",
+    "Final_Label",
+    "Reason",
+]
+
+FEATURES = [
+    "Temperature",
+    "Humidity",
+    "CO_ADC",
+    "H2_Raw",
+    "PM25",
 ]
 
 LABEL_TEXT = {0: "NORMAL", 1: "WARNING", 2: "FIRE"}
@@ -26,31 +39,30 @@ LABEL_TEXT = {0: "NORMAL", 1: "WARNING", 2: "FIRE"}
 
 if not os.path.exists(MODEL_FILE):
     raise FileNotFoundError(f"{MODEL_FILE} not found. Run fire_ml_model.py first.")
+if not os.path.exists(SCALER_FILE):
+    raise FileNotFoundError(f"{SCALER_FILE} not found. Copy fire_scaler.pkl beside the model.")
 
 model = joblib.load(MODEL_FILE)
+scaler = joblib.load(SCALER_FILE)
 print(f"Model loaded from {MODEL_FILE}")
+print(f"Scaler loaded from {SCALER_FILE}")
 
 
 def ensure_log_file():
-    if not os.path.exists(LOG_CSV):
-        with open(LOG_CSV, "w", newline="", encoding="utf-8") as file_obj:
-            csv.writer(file_obj).writerow(
-                [
-                    "Timestamp",
-                    "Source",
-                    "Temperature",
-                    "Humidity",
-                    "Smoke_ADC",
-                    "CO_ADC",
-                    "Flame",
-                    "LDR_ADC",
-                    "LDR_Flicker",
-                    "Motion",
-                    "ML_Pred",
-                    "Final_Label",
-                    "Reason",
-                ]
-            )
+    if file_has_expected_header(LOG_CSV):
+        return
+
+    with open(LOG_CSV, "w", newline="", encoding="utf-8") as file_obj:
+        csv.writer(file_obj).writerow(LOG_HEADER)
+
+
+def file_has_expected_header(path):
+    if not os.path.exists(path) or os.path.getsize(path) == 0:
+        return False
+
+    with open(path, "r", encoding="utf-8", errors="replace") as file_obj:
+        first_line = file_obj.readline().strip()
+    return first_line == ",".join(LOG_HEADER)
 
 
 def rule_override(temp, hum, smoke_adc, co_adc, flame, ldr_flicker):
@@ -93,31 +105,32 @@ def telemetry():
     else:
         co_adc_for_ml = co_adc
 
-    # PMS7003 is not wired yet, so use a temporary smoke proxy from CO.
-    smoke_adc_proxy = min(co_adc_for_ml * 1.3, 4095.0)
+    # The new model expects h2_raw and pm25; this board does not have those
+    # sensors, so match the trained receiver's proxy mapping.
+    h2_raw_proxy = co_adc_for_ml
+    pm25_proxy = ldr_adc
 
     features = [[
         temp,
         hum,
-        smoke_adc_proxy,
         co_adc_for_ml,
-        flame,
-        ldr_adc,
-        ldr_flicker,
-        motion,
+        h2_raw_proxy,
+        pm25_proxy,
     ]]
-    ml_pred = int(model.predict(features)[0])
+    features_scaled = scaler.transform(features)
+    raw_ml_pred = int(model.predict(features_scaled)[0])
+    ml_pred = 2 if raw_ml_pred == 1 else 0
 
     override, reason = rule_override(
-        temp, hum, smoke_adc_proxy, co_adc_for_ml, flame, ldr_flicker
+        temp, hum, pm25_proxy, co_adc_for_ml, flame, ldr_flicker
     )
 
     if override is not None:
         final_label = override
         final_reason = reason
-    elif ml_pred == 2 and hum > 65 and flame == 0 and co_adc_for_ml < 600:
-        final_label = 1
-        final_reason = "ML=FIRE but high humidity + no flame - downgraded"
+    elif raw_ml_pred == 1:
+        final_label = 2
+        final_reason = "ML"
     else:
         final_label = ml_pred
         final_reason = "ML"
@@ -132,7 +145,7 @@ def telemetry():
                 device_id,
                 round(temp, 1),
                 round(hum, 1),
-                round(smoke_adc_proxy, 0),
+                round(pm25_proxy, 0),
                 round(co_adc_for_ml, 0),
                 flame,
                 round(ldr_adc, 0),
@@ -157,6 +170,7 @@ def telemetry():
         {
             "status": "ok",
             "ml_pred": ml_pred,
+            "raw_ml_pred": raw_ml_pred,
             "final_label": label_str,
             "reason": final_reason,
         }
@@ -165,7 +179,7 @@ def telemetry():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "running", "model": MODEL_FILE}), 200
+    return jsonify({"status": "running", "model": MODEL_FILE, "scaler": SCALER_FILE}), 200
 
 
 if __name__ == "__main__":
