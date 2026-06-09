@@ -139,7 +139,7 @@ RandomForestClassifier(
 
 | Metric | Value |
 |---|---|
-| Test Accuracy | 99.16% |
+| Test Accuracy | 94.93% |
 | Fire Recall | 98% |
 | No-Fire Precision | 99% |
 

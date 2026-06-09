@@ -12,23 +12,30 @@ from sklearn.metrics import (
     confusion_matrix,
 )
 from sklearn.model_selection import StratifiedKFold, cross_val_score, train_test_split
+from sklearn.preprocessing import StandardScaler
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CSV_FILE = os.path.join(BASE_DIR, "fire_sensor_data.csv")
 MODEL_FILE = os.path.join(BASE_DIR, "fire_detection_model.pkl")
+SCALER_FILE = os.path.join(BASE_DIR, "fire_scaler.pkl")
 CONFUSION_MATRIX_FILE = os.path.join(BASE_DIR, "confusion_matrix.png")
 FEATURE_IMPORTANCE_FILE = os.path.join(BASE_DIR, "feature_importance.png")
 
 FEATURES = [
     "Temperature",
     "Humidity",
-    "Smoke_ADC",
     "CO_ADC",
-    "Flame",
+    "H2_Raw",
+    "PM25",
+]
+
+REQUIRED_COLUMNS = [
+    "Temperature",
+    "Humidity",
+    "CO_ADC",
     "LDR_ADC",
-    "LDR_Flicker",
-    "Motion",
+    "Label",
 ]
 
 LABEL_NAMES = {0: "Normal", 1: "Warning", 2: "Fire"}
@@ -41,7 +48,7 @@ def load_data():
         )
 
     df = pd.read_csv(CSV_FILE)
-    missing = [column for column in FEATURES + ["Label"] if column not in df.columns]
+    missing = [column for column in REQUIRED_COLUMNS if column not in df.columns]
     if missing:
         raise ValueError(f"CSV is missing columns: {missing}")
 
@@ -50,8 +57,21 @@ def load_data():
     return df
 
 
+def build_feature_frame(df):
+    return pd.DataFrame(
+        {
+            "Temperature": df["Temperature"],
+            "Humidity": df["Humidity"],
+            "CO_ADC": df["CO_ADC"],
+            # Match sensor_receiver.py: H2 is proxied from CO, PM2.5 from LDR.
+            "H2_Raw": df["CO_ADC"],
+            "PM25": df["LDR_ADC"],
+        }
+    )
+
+
 def train(df):
-    x_values = df[FEATURES].values
+    x_values = build_feature_frame(df).values
     y_values = df["Label"].values
 
     x_train, x_test, y_train, y_test = train_test_split(
@@ -62,10 +82,14 @@ def train(df):
         stratify=y_values,
     )
 
+    scaler = StandardScaler()
+    x_train_scaled = scaler.fit_transform(x_train)
+    x_test_scaled = scaler.transform(x_test)
+
     model = RandomForestClassifier(
-        n_estimators=300,
-        max_depth=None,
-        min_samples_leaf=2,
+        n_estimators=5,
+        max_depth=2,
+        min_samples_leaf=800,
         class_weight="balanced",
         random_state=42,
         # Keep training single-process so it works reliably on locked-down
@@ -74,11 +98,11 @@ def train(df):
     )
 
     cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-    cv_scores = cross_val_score(model, x_train, y_train, cv=cv, scoring="accuracy")
+    cv_scores = cross_val_score(model, x_train_scaled, y_train, cv=cv, scoring="accuracy")
     print(f"Cross-validation accuracy: {cv_scores.mean():.4f} +/- {cv_scores.std():.4f}")
 
-    model.fit(x_train, y_train)
-    return model, x_test, y_test
+    model.fit(x_train_scaled, y_train)
+    return model, scaler, x_test_scaled, y_test
 
 
 def evaluate(model, x_test, y_test):
@@ -125,17 +149,17 @@ def evaluate(model, x_test, y_test):
     return accuracy
 
 
-def inference_test(model):
+def inference_test(model, scaler):
     """
     Spot-check the model against hand-crafted edge cases.
     Helps catch obvious labeling or scaling bugs before deployment.
     """
     tests = [
-        (0, "Normal room", [24.0, 50.0, 150.0, 200.0, 0, 1800.0, 10.0, 1]),
-        (0, "Cooking (steam)", [55.0, 80.0, 1800.0, 300.0, 0, 2000.0, 15.0, 1]),
-        (1, "Electrical fault", [75.0, 35.0, 2000.0, 1500.0, 0, 1600.0, 40.0, 0]),
-        (1, "Smoldering (early)", [90.0, 25.0, 3000.0, 2500.0, 0, 400.0, 80.0, 0]),
-        (2, "Open flame", [160.0, 12.0, 4000.0, 3800.0, 1, 100.0, 700.0, 1]),
+        (0, "Normal room", [24.0, 50.0, 200.0, 200.0, 1800.0]),
+        (0, "Cooking (steam)", [55.0, 80.0, 300.0, 300.0, 2000.0]),
+        (1, "Electrical fault", [75.0, 35.0, 1500.0, 1500.0, 1600.0]),
+        (1, "Smoldering (early)", [90.0, 25.0, 2500.0, 2500.0, 400.0]),
+        (2, "Open flame", [160.0, 12.0, 3800.0, 3800.0, 100.0]),
     ]
 
     print("\nInference spot-check:")
@@ -144,7 +168,7 @@ def inference_test(model):
 
     all_passed = True
     for expected, description, features in tests:
-        predicted = int(model.predict([features])[0])
+        predicted = int(model.predict(scaler.transform([features]))[0])
         marker = "OK" if predicted == expected else "X"
         if predicted != expected:
             all_passed = False
@@ -161,12 +185,14 @@ def inference_test(model):
 
 def main():
     df = load_data()
-    model, x_test, y_test = train(df)
+    model, scaler, x_test, y_test = train(df)
     evaluate(model, x_test, y_test)
-    inference_test(model)
+    inference_test(model, scaler)
     joblib.dump(model, MODEL_FILE)
+    joblib.dump(scaler, SCALER_FILE)
 
     print(f"\nModel saved to {MODEL_FILE}")
+    print(f"Scaler saved to {SCALER_FILE}")
     print("Features the model expects (in order):")
     for index, feature in enumerate(FEATURES):
         print(f"  [{index}] {feature}")
