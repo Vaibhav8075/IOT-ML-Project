@@ -26,7 +26,7 @@ EXPECTED_COLUMNS = [
     "Reason",
 ]
 
-BG = "#0F0F0F"
+BG = "#0F0F0F"  
 SURFACE = "#161616"
 CARD = "#1C1C1C"
 BORDER = "#2A2A2A"
